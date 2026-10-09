@@ -51,6 +51,33 @@ Describe 'Account profile store' {
         { Switch-SavedProfile -SourceLabel 'one' -TargetLabel 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck } | Should Throw
         [IO.File]::ReadAllText($auth) | Should Be $payloadB
     }
+
+    It 'prepares another login without losing the first account' {
+        Save-CurrentProfile -Label 'one' -AuthPath $auth -StorePath $store
+        Start-AddProfile -SourceLabel 'one' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        (Test-Path $auth) | Should Be $false
+        (Get-SavedProfile -Label 'one' -StorePath $store) | Should Be $payloadA
+        (Get-PendingProfile -StorePath $store).SourceLabel | Should Be 'one'
+    }
+
+    It 'rejects completing with the original account and restores it' {
+        Save-CurrentProfile -Label 'one' -AuthPath $auth -StorePath $store
+        Start-AddProfile -SourceLabel 'one' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        [IO.File]::WriteAllText($auth, $payloadA)
+        { Complete-AddProfile -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck } | Should Throw
+        Restore-PendingProfile -AuthPath $auth -StorePath $store -SkipProcessCheck
+        [IO.File]::ReadAllText($auth) | Should Be $payloadA
+        (Get-PendingProfile -StorePath $store) | Should BeNullOrEmpty
+    }
+
+    It 'saves the second account only after a different login' {
+        Save-CurrentProfile -Label 'one' -AuthPath $auth -StorePath $store
+        Start-AddProfile -SourceLabel 'one' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        [IO.File]::WriteAllText($auth, $payloadB)
+        Complete-AddProfile -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        (Get-SavedProfile -Label 'two' -StorePath $store) | Should Be $payloadB
+        (Get-PendingProfile -StorePath $store) | Should BeNullOrEmpty
+    }
 }
 
 Describe 'Account email display' {

@@ -107,6 +107,79 @@ function Get-ProfileLabels {
     return @(Get-ChildItem -LiteralPath $StorePath -File -Filter '*.profile' | ForEach-Object { $_.BaseName })
 }
 
+function Assert-AppClosed([bool]$SkipProcessCheck) {
+    if (-not $SkipProcessCheck -and @(Get-Process -Name ChatGPT,codex,codex-code-mode-host -ErrorAction SilentlyContinue).Count -gt 0) {
+        throw '请先完全退出 ChatGPT/Codex 桌面应用及正在运行的任务。'
+    }
+}
+
+function Get-PendingProfile {
+    param([Parameter(Mandatory)][string]$StorePath)
+    $path = Join-Path $StorePath 'add-account.dpapi'
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    Assert-RegularFile $path
+    $pending = Unprotect-Payload ([IO.File]::ReadAllText($path)) | ConvertFrom-Json -ErrorAction Stop
+    Assert-Label ([string]$pending.SourceLabel)
+    if ((Test-AuthPayload ([string]$pending.Payload)) -ne [string]$pending.AccountId) { throw '待添加账号的恢复记录无效。' }
+    return $pending
+}
+
+function Start-AddProfile {
+    param([Parameter(Mandatory)][string]$SourceLabel, [Parameter(Mandatory)][string]$AuthPath,
+          [Parameter(Mandatory)][string]$StorePath, [switch]$SkipProcessCheck)
+    Assert-Label $SourceLabel
+    Assert-AppClosed ([bool]$SkipProcessCheck)
+    Assert-Store $StorePath
+    if (Get-PendingProfile -StorePath $StorePath) { throw '已有待添加的账号，请先完成保存或恢复。' }
+    Assert-RegularFile $AuthPath
+    $payload = [IO.File]::ReadAllText($AuthPath)
+    $id = Test-AuthPayload $payload
+    $saved = Get-SavedProfile -Label $SourceLabel -StorePath $StorePath
+    if ($id -ne (Test-AuthPayload $saved)) { throw '当前登录账号与已保存账号不匹配。' }
+    Write-Profile $SourceLabel $payload $StorePath $true
+    $path = Join-Path $StorePath 'add-account.dpapi'
+    $pending = @{ SourceLabel = $SourceLabel; AccountId = $id; Payload = $payload } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($path, (Protect-Payload $pending), [Text.Encoding]::ASCII)
+    try { [IO.File]::Delete($AuthPath) }
+    catch { throw '移走登录文件失败；恢复记录已保留，请先恢复原账号。' }
+}
+
+function Complete-AddProfile {
+    param([Parameter(Mandatory)][string]$Label, [Parameter(Mandatory)][string]$AuthPath,
+          [Parameter(Mandatory)][string]$StorePath, [switch]$SkipProcessCheck)
+    Assert-Label $Label
+    Assert-AppClosed ([bool]$SkipProcessCheck)
+    $pending = Get-PendingProfile -StorePath $StorePath
+    if (-not $pending) { throw '没有待添加的账号。' }
+    Assert-RegularFile $AuthPath
+    $payload = [IO.File]::ReadAllText($AuthPath)
+    if ((Test-AuthPayload $payload) -eq [string]$pending.AccountId) { throw '仍是原账号；请登录另一个账号后再保存。' }
+    Write-Profile $Label $payload $StorePath $false
+    [IO.File]::Delete((Join-Path $StorePath 'add-account.dpapi'))
+}
+
+function Restore-PendingProfile {
+    param([Parameter(Mandatory)][string]$AuthPath, [Parameter(Mandatory)][string]$StorePath,
+          [switch]$SkipProcessCheck)
+    Assert-AppClosed ([bool]$SkipProcessCheck)
+    $pending = Get-PendingProfile -StorePath $StorePath
+    if (-not $pending) { throw '没有待恢复的账号。' }
+    if (Test-Path -LiteralPath $AuthPath) {
+        Assert-RegularFile $AuthPath
+        if ((Test-AuthPayload ([IO.File]::ReadAllText($AuthPath))) -ne [string]$pending.AccountId) {
+            throw '当前已有另一个账号，请先完成保存，不能直接覆盖。'
+        }
+    }
+    $parent = Split-Path $AuthPath -Parent
+    $temp = Join-Path $parent ('.auth-restore-' + [guid]::NewGuid().ToString('N'))
+    try {
+        [IO.File]::WriteAllText($temp, [string]$pending.Payload, (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $AuthPath) { Invoke-AtomicReplace $temp $AuthPath }
+        else { [IO.File]::Move($temp, $AuthPath) }
+        [IO.File]::Delete((Join-Path $StorePath 'add-account.dpapi'))
+    } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
+}
+
 function Switch-SavedProfile {
     param([Parameter(Mandatory)][string]$SourceLabel, [Parameter(Mandatory)][string]$TargetLabel,
           [Parameter(Mandatory)][string]$AuthPath, [Parameter(Mandatory)][string]$StorePath,
@@ -148,4 +221,4 @@ function Switch-SavedProfile {
     return $backup
 }
 
-Export-ModuleMember -Function Test-AuthPayload,Get-AuthEmail,Save-CurrentProfile,Get-SavedProfile,Get-ProfileLabels,Switch-SavedProfile
+Export-ModuleMember -Function Test-AuthPayload,Get-AuthEmail,Save-CurrentProfile,Get-SavedProfile,Get-ProfileLabels,Switch-SavedProfile,Get-PendingProfile,Start-AddProfile,Complete-AddProfile,Restore-PendingProfile

@@ -68,6 +68,26 @@ $refreshButton.ForeColor = [Drawing.Color]::White
 $refreshButton.Text = '↻  刷新状态'
 $sidebar.Controls.Add($refreshButton)
 
+$addButton = New-Object Windows.Forms.Button
+$addButton.Location = New-Object Drawing.Point(18,249)
+$addButton.Size = New-Object Drawing.Size(176,43)
+$addButton.FlatStyle = 'Flat'
+$addButton.FlatAppearance.BorderColor = [Drawing.Color]::Gray
+$addButton.BackColor = $dark
+$addButton.ForeColor = [Drawing.Color]::White
+$addButton.Text = '＋  添加下一个账号'
+$sidebar.Controls.Add($addButton)
+
+$restoreButton = New-Object Windows.Forms.Button
+$restoreButton.Location = New-Object Drawing.Point(18,303)
+$restoreButton.Size = New-Object Drawing.Size(176,39)
+$restoreButton.FlatStyle = 'Flat'
+$restoreButton.FlatAppearance.BorderSize = 0
+$restoreButton.BackColor = $dark
+$restoreButton.ForeColor = [Drawing.Color]::White
+$restoreButton.Text = '↶  恢复先前账号'
+$sidebar.Controls.Add($restoreButton)
+
 $sideNote = New-Object Windows.Forms.Label
 $sideNote.Location = New-Object Drawing.Point(22,432)
 $sideNote.Size = New-Object Drawing.Size(171,90)
@@ -144,12 +164,20 @@ function Get-CurrentId {
 function Update-Preflight {
     $running = @(Get-Process -Name ChatGPT,codex,codex-code-mode-host -ErrorAction SilentlyContinue).Count
     $supported = Test-Path -LiteralPath $supportedApp
-    $switchButton.Enabled = [bool]($supported -and $running -eq 0 -and $script:currentLabel -and $script:selectedTarget -and ($script:currentLabel -ne $script:selectedTarget))
+    try { $pending = Get-PendingProfile -StorePath $storePath } catch { $pending = $null; $status.Text = '恢复记录无法读取：' + $_.Exception.Message }
+    $addButton.Enabled = [bool]($supported -and $running -eq 0 -and $script:currentLabel -and -not $pending)
+    $restoreButton.Enabled = [bool]($supported -and $running -eq 0 -and $pending)
+    $switchButton.Enabled = [bool]($supported -and $running -eq 0 -and -not $pending -and $script:currentLabel -and $script:selectedTarget -and ($script:currentLabel -ne $script:selectedTarget))
+    if ($pending) { $addButton.Text = '✓  完成添加并保存' } else { $addButton.Text = '＋  添加下一个账号' }
+    if ($pending -and $supported -and $running -eq 0) { $addButton.Enabled = $true }
     if (-not $supported) {
         $banner.Text = '当前应用版本未通过兼容检查，切换已停用。'
         $banner.BackColor = [Drawing.Color]::FromArgb(255,243,230)
     } elseif ($running -gt 0) {
         $banner.Text = "●  ChatGPT/Codex 仍在运行（$running 个进程），退出后才能切换"
+        $banner.BackColor = [Drawing.Color]::FromArgb(255,243,230)
+    } elseif ($pending) {
+        $banner.Text = '待添加账号：登录新账号后关闭应用，再点击「完成添加并保存」。'
         $banner.BackColor = [Drawing.Color]::FromArgb(255,243,230)
     } elseif (-not $script:currentLabel) {
         $banner.Text = '请先保存当前登录，再选择目标账号。'
@@ -248,6 +276,36 @@ $saveButton.Add_Click({
 })
 
 $refreshButton.Add_Click({ Refresh-Accounts })
+
+$addButton.Add_Click({
+    try {
+        Update-Preflight
+        if (-not $addButton.Enabled) { throw '请先保存当前账号并完全退出应用。' }
+        $pending = Get-PendingProfile -StorePath $storePath
+        if ($pending) {
+            $remark = [Microsoft.VisualBasic.Interaction]::InputBox('为新账号填写备注（不要输入密码）：','保存新账号','')
+            if ([string]::IsNullOrWhiteSpace($remark)) { return }
+            Complete-AddProfile -Label $remark -AuthPath $authPath -StorePath $storePath
+            Refresh-Accounts
+            $status.Text = '新账号已保存。以后可在关闭应用后切换。'
+        } else {
+            $choice = [Windows.Forms.MessageBox]::Show('将暂时移走当前登录文件，并保留加密恢复记录。随后打开桌面端应出现登录页。若仍自动登录原账号，不要点退出登录，请关闭应用后恢复。继续吗？','添加下一个账号',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Warning)
+            if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
+            Start-AddProfile -SourceLabel $script:currentLabel -AuthPath $authPath -StorePath $storePath
+            Refresh-Accounts
+            $status.Text = '现在打开官方应用登录另一个账号。登录后完全退出，再点「完成添加并保存」。'
+        }
+    } catch { $status.Text = '添加失败：' + $_.Exception.Message }
+})
+
+$restoreButton.Add_Click({
+    try {
+        if (-not $restoreButton.Enabled) { throw '请先完全退出应用。' }
+        Restore-PendingProfile -AuthPath $authPath -StorePath $storePath
+        Refresh-Accounts
+        $status.Text = '原账号登录文件已恢复。请重新打开应用核对账号。'
+    } catch { $status.Text = '恢复失败：' + $_.Exception.Message }
+})
 
 $switchButton.Add_Click({
     try {
