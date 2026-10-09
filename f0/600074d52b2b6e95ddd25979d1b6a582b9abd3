@@ -1,0 +1,26 @@
+Start-Switcher.ps1
+  s_6429f832de214f::t_375638ac371d4b 71-90,167-172,179-181,280-308
+  s_6429f832de214f::t_01716c05095f89 309
+tests/AccountSwitcher.Tests.ps1
+  s_6429f832de214f::t_a1784d5e5a7956 54-80
+README.md
+  s_6429f832de214f::t_1f6b8cfd72c979 9-11,21
+AccountSwitcher.psm1
+  s_6429f832de214f::t_149627b5692621 110-182,224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f0600074d52b2b6e95ddd25979d1b6a582b9abd3",
+  "prompts": {},
+  "sessions": {
+    "s_6429f832de214f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f1a5-3f48-7360-b675-140bf602e5e2",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "ftli <ftli@leqee.com>"
+    }
+  }
+}
