@@ -7,7 +7,6 @@ Import-Module (Join-Path $PSScriptRoot 'AccountSwitcher.psm1') -Force
 
 $authPath = Join-Path $env:USERPROFILE '.codex\auth.json'
 $storePath = Join-Path $env:LOCALAPPDATA 'ChatGPTAccountSwitcher\profiles'
-$supportedApp = 'C:\Program Files\WindowsApps\OpenAI.Codex_26.1002.7124.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe'
 $script:currentLabel = $null
 $script:selectedTarget = $null
 $script:accountCards = @()
@@ -163,17 +162,13 @@ function Get-CurrentId {
 
 function Update-Preflight {
     $running = @(Get-Process -Name ChatGPT,codex,codex-code-mode-host -ErrorAction SilentlyContinue).Count
-    $supported = Test-Path -LiteralPath $supportedApp
     try { $pending = Get-PendingProfile -StorePath $storePath } catch { $pending = $null; $status.Text = '恢复记录无法读取：' + $_.Exception.Message }
-    $addButton.Enabled = [bool]($supported -and $running -eq 0 -and $script:currentLabel -and -not $pending)
-    $restoreButton.Enabled = [bool]($supported -and $running -eq 0 -and $pending)
-    $switchButton.Enabled = [bool]($supported -and $running -eq 0 -and -not $pending -and $script:currentLabel -and $script:selectedTarget -and ($script:currentLabel -ne $script:selectedTarget))
+    $addButton.Enabled = [bool]($running -eq 0 -and $script:currentLabel -and -not $pending)
+    $restoreButton.Enabled = [bool]($running -eq 0 -and $pending)
+    $switchButton.Enabled = [bool]($running -eq 0 -and -not $pending -and $script:currentLabel -and $script:selectedTarget -and ($script:currentLabel -ne $script:selectedTarget))
     if ($pending) { $addButton.Text = '✓  完成添加并保存' } else { $addButton.Text = '＋  添加下一个账号' }
-    if ($pending -and $supported -and $running -eq 0) { $addButton.Enabled = $true }
-    if (-not $supported) {
-        $banner.Text = '当前应用版本未通过兼容检查，切换已停用。'
-        $banner.BackColor = [Drawing.Color]::FromArgb(255,243,230)
-    } elseif ($running -gt 0) {
+    if ($pending -and $running -eq 0) { $addButton.Enabled = $true }
+    if ($running -gt 0) {
         $banner.Text = "●  ChatGPT/Codex 仍在运行（$running 个进程），退出后才能切换"
         $banner.BackColor = [Drawing.Color]::FromArgb(255,243,230)
     } elseif ($pending) {
