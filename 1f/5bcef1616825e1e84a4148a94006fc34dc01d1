@@ -1,0 +1,21 @@
+README.md
+  s_6429f832de214f::t_cfe612dcfa4e70 3,22
+Start-Switcher.ps1
+  s_6429f832de214f::t_cfe612dcfa4e70 166-168,170-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1f5bcef1616825e1e84a4148a94006fc34dc01d1",
+  "prompts": {},
+  "sessions": {
+    "s_6429f832de214f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f1a5-3f48-7360-b675-140bf602e5e2",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "ftli <ftli@leqee.com>"
+    }
+  }
+}
