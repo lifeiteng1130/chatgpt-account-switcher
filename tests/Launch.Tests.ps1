@@ -10,4 +10,13 @@ Describe 'GUI launcher' {
         $result = & powershell.exe -NoProfile -STA -File (Join-Path $root 'Start-Switcher.ps1') -ValidateUi 2>&1
         ($result -join "`n") | Should Match '^UI_READY cards=\d+$'
     }
+
+    It 'exposes guarded account trash, restore, and permanent delete controls' {
+        $source = [IO.File]::ReadAllText((Join-Path $root 'Start-Switcher.ps1'))
+        $source | Should Match '\$trashButton'
+        $source | Should Match 'New-TrashCard'
+        $source | Should Match 'Move-ProfileToTrash'
+        $source | Should Match 'Restore-TrashedProfile'
+        $source | Should Match 'Remove-TrashedProfile'
+    }
 }

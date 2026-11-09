@@ -107,6 +107,98 @@ function Get-ProfileLabels {
     return @(Get-ChildItem -LiteralPath $StorePath -File -Filter '*.profile' | ForEach-Object { $_.BaseName })
 }
 
+function Assert-TrashId([string]$Id) {
+    if ($Id -notmatch '^(?<Stamp>\d{17})_[0-9a-f]{32}_(?<Label>[\p{L}\p{N}_-]{1,32})$') {
+        throw '垃圾箱记录标识无效。'
+    }
+    return $Matches.Label
+}
+
+function Get-TrashDirectory([string]$StorePath, [bool]$Create) {
+    if (-not (Test-Path -LiteralPath $StorePath)) {
+        if (-not $Create) { return $null }
+        Assert-Store $StorePath
+    }
+    Assert-Store $StorePath
+    $trash = Join-Path $StorePath 'trash'
+    if (-not (Test-Path -LiteralPath $trash)) {
+        if (-not $Create) { return $null }
+        Assert-Store $trash
+    }
+    $item = Get-Item -LiteralPath $trash -Force
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw '垃圾箱路径不可用。'
+    }
+    return $trash
+}
+
+function Move-ProfileToTrash {
+    param([Parameter(Mandatory)][string]$Label, [Parameter(Mandatory)][string]$AuthPath,
+          [Parameter(Mandatory)][string]$StorePath, [switch]$SkipProcessCheck)
+    Assert-Label $Label
+    Assert-AppClosed ([bool]$SkipProcessCheck)
+    if (Get-PendingProfile -StorePath $StorePath) { throw '请先完成或恢复正在添加的账号。' }
+    Assert-RegularFile $AuthPath
+    $currentId = Test-AuthPayload ([IO.File]::ReadAllText($AuthPath))
+    if ($currentId -eq (Test-AuthPayload (Get-SavedProfile -Label $Label -StorePath $StorePath))) {
+        throw '不能将当前登录账号移到垃圾箱，请先切换到其他账号。'
+    }
+    $trash = Get-TrashDirectory $StorePath $true
+    $source = Join-Path $StorePath "$Label.profile"
+    Assert-RegularFile $source
+    $id = (Get-Date -Format 'yyyyMMddHHmmssfff') + '_' + [guid]::NewGuid().ToString('N') + '_' + $Label
+    [IO.File]::Move($source, (Join-Path $trash "$id.profile"))
+    return $id
+}
+
+function Get-TrashedProfiles {
+    param([Parameter(Mandatory)][string]$StorePath)
+    $trash = Get-TrashDirectory $StorePath $false
+    if (-not $trash) { return @() }
+    return @(Get-ChildItem -LiteralPath $trash -File -Filter '*.profile' | Sort-Object Name -Descending | ForEach-Object {
+        try {
+            Assert-RegularFile $_.FullName
+            $id = $_.BaseName
+            $label = Assert-TrashId $id
+            [pscustomobject]@{ Id = $id; Label = $label; DeletedAt = [datetime]::ParseExact($id.Substring(0,17), 'yyyyMMddHHmmssfff', [Globalization.CultureInfo]::InvariantCulture) }
+        } catch { Write-Warning '已跳过一个无效的垃圾箱记录。' }
+    })
+}
+
+function Restore-TrashedProfile {
+    param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][string]$StorePath,
+          [switch]$SkipProcessCheck)
+    $label = Assert-TrashId $Id
+    Assert-AppClosed ([bool]$SkipProcessCheck)
+    if (Get-PendingProfile -StorePath $StorePath) { throw '请先完成或恢复正在添加的账号。' }
+    $trash = Get-TrashDirectory $StorePath $false
+    if (-not $trash) { throw '垃圾箱中没有该账号。' }
+    $source = Join-Path $trash "$Id.profile"
+    Assert-RegularFile $source
+    $destination = Join-Path $StorePath "$label.profile"
+    if (Test-Path -LiteralPath $destination) { throw '同名账号已存在，不能覆盖；请先处理名称冲突。' }
+    Test-AuthPayload (Unprotect-Payload ([IO.File]::ReadAllText($source))) | Out-Null
+    [IO.File]::Move($source, $destination)
+}
+
+function Remove-TrashedProfile {
+    param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][string]$AuthPath,
+          [Parameter(Mandatory)][string]$StorePath,
+          [switch]$SkipProcessCheck)
+    Assert-TrashId $Id | Out-Null
+    Assert-AppClosed ([bool]$SkipProcessCheck)
+    if (Get-PendingProfile -StorePath $StorePath) { throw '请先完成或恢复正在添加的账号。' }
+    $trash = Get-TrashDirectory $StorePath $false
+    if (-not $trash) { throw '垃圾箱中没有该账号。' }
+    $source = Join-Path $trash "$Id.profile"
+    Assert-RegularFile $source
+    Assert-RegularFile $AuthPath
+    $currentId = Test-AuthPayload ([IO.File]::ReadAllText($AuthPath))
+    $deletedId = Test-AuthPayload (Unprotect-Payload ([IO.File]::ReadAllText($source)))
+    if ($currentId -eq $deletedId) { throw '不能永久删除当前登录账号的保存记录。' }
+    [IO.File]::Delete($source)
+}
+
 function Assert-AppClosed([bool]$SkipProcessCheck) {
     if (-not $SkipProcessCheck -and @(Get-Process -Name ChatGPT,codex,codex-code-mode-host -ErrorAction SilentlyContinue).Count -gt 0) {
         throw '请先完全退出 ChatGPT/Codex 桌面应用及正在运行的任务。'
@@ -221,4 +313,4 @@ function Switch-SavedProfile {
     return $backup
 }
 
-Export-ModuleMember -Function Test-AuthPayload,Get-AuthEmail,Save-CurrentProfile,Get-SavedProfile,Get-ProfileLabels,Switch-SavedProfile,Get-PendingProfile,Start-AddProfile,Complete-AddProfile,Restore-PendingProfile
+Export-ModuleMember -Function Test-AuthPayload,Get-AuthEmail,Save-CurrentProfile,Get-SavedProfile,Get-ProfileLabels,Move-ProfileToTrash,Get-TrashedProfiles,Restore-TrashedProfile,Remove-TrashedProfile,Switch-SavedProfile,Get-PendingProfile,Start-AddProfile,Complete-AddProfile,Restore-PendingProfile

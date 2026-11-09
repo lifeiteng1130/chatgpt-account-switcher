@@ -10,6 +10,8 @@ $storePath = Join-Path $env:LOCALAPPDATA 'ChatGPTAccountSwitcher\profiles'
 $script:currentLabel = $null
 $script:selectedTarget = $null
 $script:accountCards = @()
+$script:trashActionButtons = @()
+$script:showTrash = $false
 $dark = [Drawing.Color]::FromArgb(32,33,35)
 $canvas = [Drawing.Color]::FromArgb(247,247,248)
 $ink = [Drawing.Color]::FromArgb(32,33,35)
@@ -87,6 +89,16 @@ $restoreButton.ForeColor = [Drawing.Color]::White
 $restoreButton.Text = '↶  恢复先前账号'
 $sidebar.Controls.Add($restoreButton)
 
+$trashButton = New-Object Windows.Forms.Button
+$trashButton.Location = New-Object Drawing.Point(18,356)
+$trashButton.Size = New-Object Drawing.Size(176,39)
+$trashButton.FlatStyle = 'Flat'
+$trashButton.FlatAppearance.BorderSize = 0
+$trashButton.BackColor = $dark
+$trashButton.ForeColor = [Drawing.Color]::White
+$trashButton.Text = '▤  查看垃圾箱'
+$sidebar.Controls.Add($trashButton)
+
 $sideNote = New-Object Windows.Forms.Label
 $sideNote.Location = New-Object Drawing.Point(22,432)
 $sideNote.Size = New-Object Drawing.Size(171,90)
@@ -162,10 +174,15 @@ function Get-CurrentId {
 
 function Update-Preflight {
     $running = @(Get-Process -Name ChatGPT,codex,codex-code-mode-host -ErrorAction SilentlyContinue).Count
-    try { $pending = Get-PendingProfile -StorePath $storePath } catch { $pending = $null; $status.Text = '恢复记录无法读取：' + $_.Exception.Message }
-    $addButton.Enabled = [bool]($running -eq 0 -and $script:currentLabel -and -not $pending)
+    $pendingError = $false
+    try { $pending = Get-PendingProfile -StorePath $storePath } catch { $pending = $null; $pendingError = $true; $status.Text = '恢复记录无法读取：' + $_.Exception.Message }
+    $addButton.Enabled = [bool]($running -eq 0 -and $script:currentLabel -and -not $pending -and -not $pendingError)
     $restoreButton.Enabled = [bool]($running -eq 0 -and $pending)
-    $switchButton.Enabled = [bool]($running -eq 0 -and -not $pending -and $script:currentLabel -and $script:selectedTarget -and ($script:currentLabel -ne $script:selectedTarget))
+    $switchButton.Enabled = [bool]($running -eq 0 -and -not $pending -and -not $pendingError -and -not $script:showTrash -and $script:currentLabel -and $script:selectedTarget -and ($script:currentLabel -ne $script:selectedTarget))
+    foreach ($button in $script:trashActionButtons) {
+        $button.Enabled = [bool]($running -eq 0 -and -not $pending -and -not $pendingError -and
+            ($script:showTrash -or ($script:currentLabel -and $button.Tag -ne $script:currentLabel)))
+    }
     if ($pending) { $addButton.Text = '✓  完成添加并保存' } else { $addButton.Text = '＋  添加下一个账号' }
     if ($pending -and $running -eq 0) { $addButton.Enabled = $true }
     if ($running -gt 0) {
@@ -212,7 +229,7 @@ function New-AccountCard([string]$Label,[string]$Email,[bool]$IsCurrent) {
 
     $name = New-Object Windows.Forms.Label
     $name.Location = New-Object Drawing.Point(64,12)
-    $name.Size = New-Object Drawing.Size(435,25)
+    $name.Size = New-Object Drawing.Size(345,25)
     $name.Font = New-Object Drawing.Font('Microsoft YaHei UI',10,[Drawing.FontStyle]::Bold)
     $name.ForeColor = $ink
     $name.AutoEllipsis = $true
@@ -222,12 +239,36 @@ function New-AccountCard([string]$Label,[string]$Email,[bool]$IsCurrent) {
 
     $hint = New-Object Windows.Forms.Label
     $hint.Location = New-Object Drawing.Point(65,38)
-    $hint.Size = New-Object Drawing.Size(390,20)
+    $hint.Size = New-Object Drawing.Size(340,20)
     $hint.ForeColor = $muted
     $hint.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
     $hint.Text = if ($IsCurrent) { '当前登录' } elseif ($Email) { '点击选择为目标账号' } else { '邮箱不可用 · 点击选择' }
     $hint.Tag = $Label
     $card.Controls.Add($hint)
+
+    $moveButton = New-Object Windows.Forms.Button
+    $moveButton.Location = New-Object Drawing.Point(412,18)
+    $moveButton.Size = New-Object Drawing.Size(103,31)
+    $moveButton.FlatStyle = 'Flat'
+    $moveButton.ForeColor = $muted
+    $moveButton.Text = '移到垃圾箱'
+    $moveButton.Tag = $Label
+    $moveButton.Enabled = -not $IsCurrent
+    $moveButton.Add_Click({
+        try {
+            Update-Preflight
+            if (-not $this.Enabled) { throw '当前账号或恢复流程中的账号不能移除。' }
+            $label = [string]$this.Tag
+            $choice = [Windows.Forms.MessageBox]::Show("将 $label 移到加密垃圾箱？`r`n请先完全退出 ChatGPT/Codex；此操作不会删除聊天记录。",'确认移除账号',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Warning)
+            if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
+            Move-ProfileToTrash -Label $label -AuthPath $authPath -StorePath $storePath | Out-Null
+            if ($script:selectedTarget -eq $label) { $script:selectedTarget = $null }
+            Refresh-Accounts
+            $status.Text = "账号 $label 已移到垃圾箱，可随时恢复。"
+        } catch { $status.Text = '移除失败：' + $_.Exception.Message }
+    })
+    $card.Controls.Add($moveButton)
+    $script:trashActionButtons += $moveButton
 
     $handler = { Select-Target ([string]$this.Tag) }
     $card.Add_Click($handler)
@@ -237,28 +278,123 @@ function New-AccountCard([string]$Label,[string]$Email,[bool]$IsCurrent) {
     return $card
 }
 
+function New-TrashCard($Entry) {
+    $card = New-Object Windows.Forms.Panel
+    $card.Size = New-Object Drawing.Size(526,67)
+    $card.Margin = New-Object Windows.Forms.Padding(0,0,0,9)
+    $card.BackColor = [Drawing.Color]::White
+    $card.BorderStyle = 'FixedSingle'
+
+    $name = New-Object Windows.Forms.Label
+    $name.Location = New-Object Drawing.Point(15,11)
+    $name.Size = New-Object Drawing.Size(305,25)
+    $name.Font = New-Object Drawing.Font('Microsoft YaHei UI',10,[Drawing.FontStyle]::Bold)
+    $name.ForeColor = $ink
+    $name.AutoEllipsis = $true
+    $name.Text = [string]$Entry.Label
+    $card.Controls.Add($name)
+
+    $date = New-Object Windows.Forms.Label
+    $date.Location = New-Object Drawing.Point(15,39)
+    $date.Size = New-Object Drawing.Size(300,18)
+    $date.ForeColor = $muted
+    $date.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
+    $date.Text = '移入时间：' + $Entry.DeletedAt.ToString('yyyy-MM-dd HH:mm')
+    $card.Controls.Add($date)
+
+    $restore = New-Object Windows.Forms.Button
+    $restore.Location = New-Object Drawing.Point(333,18)
+    $restore.Size = New-Object Drawing.Size(78,31)
+    $restore.FlatStyle = 'Flat'
+    $restore.ForeColor = $accent
+    $restore.Text = '恢复'
+    $restore.Tag = [string]$Entry.Id
+    $restore.Add_Click({
+        try {
+            Update-Preflight
+            if (-not $this.Enabled) { throw '请先退出应用并完成正在添加的账号。' }
+            Restore-TrashedProfile -Id ([string]$this.Tag) -StorePath $storePath
+            Refresh-Accounts
+            $status.Text = '账号已恢复到已保存列表。'
+        } catch { $status.Text = '恢复失败：' + $_.Exception.Message }
+    })
+    $card.Controls.Add($restore)
+    $script:trashActionButtons += $restore
+
+    $remove = New-Object Windows.Forms.Button
+    $remove.Location = New-Object Drawing.Point(418,18)
+    $remove.Size = New-Object Drawing.Size(97,31)
+    $remove.FlatStyle = 'Flat'
+    $remove.ForeColor = [Drawing.Color]::FromArgb(180,60,60)
+    $remove.Text = '永久删除'
+    $remove.Tag = [string]$Entry.Id
+    $remove.Add_Click({
+        try {
+            Update-Preflight
+            if (-not $this.Enabled) { throw '请先退出应用并完成正在添加的账号。' }
+            $id = [string]$this.Tag
+            $choice = [Windows.Forms.MessageBox]::Show("永久删除垃圾箱中的账号记录？`r`n此操作不能撤销，之后如需切换到该账号须重新登录并保存。",'确认永久删除',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Warning)
+            if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
+            Remove-TrashedProfile -Id $id -AuthPath $authPath -StorePath $storePath
+            Refresh-Accounts
+            $status.Text = '已永久删除该账号的加密保存记录。'
+        } catch { $status.Text = '删除失败：' + $_.Exception.Message }
+    })
+    $card.Controls.Add($remove)
+    $script:trashActionButtons += $remove
+    return $card
+}
+
 function Refresh-Accounts {
     $list.Controls.Clear()
     $script:accountCards = @()
+    $script:trashActionButtons = @()
     $script:currentLabel = $null
     $currentId = Get-CurrentId
-    foreach ($label in (Get-ProfileLabels -StorePath $storePath)) {
+    $labels = @(Get-ProfileLabels -StorePath $storePath)
+    if ($script:selectedTarget -and $labels -notcontains $script:selectedTarget) { $script:selectedTarget = $null }
+    foreach ($label in $labels) {
         try {
             $payload = Get-SavedProfile -Label $label -StorePath $storePath
             $id = Test-AuthPayload $payload
             $email = Get-AuthEmail -Payload $payload
             $isCurrent = [bool]($currentId -and $currentId -eq $id)
             if ($isCurrent) { $script:currentLabel = $label }
-            $card = New-AccountCard $label $email $isCurrent
-            $script:accountCards += $card
-            [void]$list.Controls.Add($card)
+            if (-not $script:showTrash) {
+                $card = New-AccountCard $label $email $isCurrent
+                $script:accountCards += $card
+                [void]$list.Controls.Add($card)
+            }
         } catch { $status.Text = "账号 $label 无法读取；请勿切换，先检查本地凭据。" }
     }
-    if ($script:accountCards.Count -eq 0) { $status.Text = '还没有保存账号。请先在官方应用登录，再点左侧「保存当前登录」。' }
-    else { $status.Text = "已保存 $($script:accountCards.Count) 个账号。邮箱仅用于显示，不参与身份校验。" }
-    if ($script:selectedTarget) { Select-Target $script:selectedTarget }
+    if ($script:showTrash) {
+        $heading.Text = '管理已移除的账号'
+        $subtitle.Text = '凭据仍加密保存在本机；恢复后才能再次切换。'
+        $listTitle.Text = '垃圾箱'
+        $trashButton.Text = '←  返回账号列表'
+        try {
+            $warnings = $null
+            $entries = @(Get-TrashedProfiles -StorePath $storePath -WarningAction SilentlyContinue -WarningVariable warnings)
+            foreach ($entry in $entries) { [void]$list.Controls.Add((New-TrashCard $entry)) }
+            $status.Text = if ($entries.Count) { "垃圾箱中有 $($entries.Count) 个账号；不会自动清空。" } else { '垃圾箱是空的。' }
+            if ($warnings) { $status.Text += ' 另有异常记录已跳过。' }
+        } catch { $status.Text = '垃圾箱无法读取：' + $_.Exception.Message }
+    } else {
+        $heading.Text = '选择要使用的账号'
+        $subtitle.Text = '邮箱用于辨认；真正的切换校验仍使用账号 ID。'
+        $listTitle.Text = '已保存的账号'
+        $trashButton.Text = '▤  查看垃圾箱'
+        if ($script:accountCards.Count -eq 0) { $status.Text = '还没有保存账号。请先在官方应用登录，再点左侧「保存当前登录」。' }
+        else { $status.Text = "已保存 $($script:accountCards.Count) 个账号。邮箱仅用于显示，不参与身份校验。" }
+        if ($script:selectedTarget) { Select-Target $script:selectedTarget }
+    }
     Update-Preflight
 }
+
+$trashButton.Add_Click({
+    $script:showTrash = -not $script:showTrash
+    Refresh-Accounts
+})
 
 $saveButton.Add_Click({
     try {

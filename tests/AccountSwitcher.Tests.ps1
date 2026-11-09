@@ -102,3 +102,77 @@ Describe 'Account email display' {
         Get-AuthEmail -Payload $payload | Should BeNullOrEmpty
     }
 }
+
+Describe 'Account trash' {
+    BeforeEach {
+        $caseRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $store = Join-Path $caseRoot 'store'
+        $auth = Join-Path $caseRoot 'auth.json'
+        $script:accountA = '{"auth_mode":"chatgpt","tokens":{"id_token":"a","access_token":"b","refresh_token":"c","account_id":"one"}}'
+        $script:accountB = '{"auth_mode":"chatgpt","tokens":{"id_token":"d","access_token":"e","refresh_token":"f","account_id":"two"}}'
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        [IO.File]::WriteAllText($auth, $accountA)
+        Save-CurrentProfile -Label 'one' -AuthPath $auth -StorePath $store
+        [IO.File]::WriteAllText($auth, $accountB)
+        Save-CurrentProfile -Label 'two' -AuthPath $auth -StorePath $store
+        [IO.File]::WriteAllText($auth, $accountA)
+    }
+
+    It 'moves only the encrypted saved profile and restores it' {
+        $encrypted = [IO.File]::ReadAllText((Join-Path $store 'two.profile'))
+        $id = Move-ProfileToTrash -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        (Get-ProfileLabels -StorePath $store) -contains 'two' | Should Be $false
+        @((Get-TrashedProfiles -StorePath $store)).Count | Should Be 1
+        [IO.File]::ReadAllText($auth) | Should Be $accountA
+        Restore-TrashedProfile -Id $id -StorePath $store -SkipProcessCheck
+        [IO.File]::ReadAllText((Join-Path $store 'two.profile')) | Should Be $encrypted
+        @((Get-TrashedProfiles -StorePath $store)).Count | Should Be 0
+    }
+
+    It 'refuses the active account or an unreadable current login' {
+        { Move-ProfileToTrash -Label 'one' -AuthPath $auth -StorePath $store -SkipProcessCheck } | Should Throw
+        [IO.File]::Delete($auth)
+        { Move-ProfileToTrash -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck } | Should Throw
+        (Get-ProfileLabels -StorePath $store) -contains 'two' | Should Be $true
+    }
+
+    It 'blocks deletion while another account is being added' {
+        Start-AddProfile -SourceLabel 'one' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        { Move-ProfileToTrash -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck } | Should Throw
+        (Get-ProfileLabels -StorePath $store) -contains 'two' | Should Be $true
+    }
+
+    It 'refuses restore collisions without overwriting either copy' {
+        $id = Move-ProfileToTrash -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        [IO.File]::WriteAllText($auth, $accountB)
+        Save-CurrentProfile -Label 'two' -AuthPath $auth -StorePath $store
+        $replacement = [IO.File]::ReadAllText((Join-Path $store 'two.profile'))
+        { Restore-TrashedProfile -Id $id -StorePath $store -SkipProcessCheck } | Should Throw
+        [IO.File]::ReadAllText((Join-Path $store 'two.profile')) | Should Be $replacement
+        @((Get-TrashedProfiles -StorePath $store)).Count | Should Be 1
+    }
+
+    It 'permanently removes only the selected trash item' {
+        $id = Move-ProfileToTrash -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        Remove-TrashedProfile -Id $id -AuthPath $auth -StorePath $store -SkipProcessCheck
+        @((Get-TrashedProfiles -StorePath $store)).Count | Should Be 0
+        (Get-ProfileLabels -StorePath $store) -contains 'one' | Should Be $true
+        [IO.File]::ReadAllText($auth) | Should Be $accountA
+        { Remove-TrashedProfile -Id '../one' -AuthPath $auth -StorePath $store -SkipProcessCheck } | Should Throw
+    }
+
+    It 'refuses permanent deletion if that account is now the active login' {
+        $id = Move-ProfileToTrash -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        [IO.File]::WriteAllText($auth, $accountB)
+        { Remove-TrashedProfile -Id $id -AuthPath $auth -StorePath $store -SkipProcessCheck } | Should Throw
+        @((Get-TrashedProfiles -StorePath $store)).Count | Should Be 1
+    }
+
+    It 'keeps valid trash entries visible when one file is malformed' {
+        $id = Move-ProfileToTrash -Label 'two' -AuthPath $auth -StorePath $store -SkipProcessCheck
+        [IO.File]::WriteAllText((Join-Path (Join-Path $store 'trash') 'broken.profile'), 'invalid')
+        $entries = @(Get-TrashedProfiles -StorePath $store -WarningAction SilentlyContinue)
+        $entries.Count | Should Be 1
+        $entries[0].Id | Should Be $id
+    }
+}
