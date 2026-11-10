@@ -5,166 +5,277 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic
 Import-Module (Join-Path $PSScriptRoot 'AccountSwitcher.psm1') -Force
 
+if (-not ('GlassAccountCard' -as [type])) {
+    $glassCs = Join-Path $PSScriptRoot 'LiquidGlass.Controls.cs'
+    if (-not (Test-Path -LiteralPath $glassCs)) { throw '缺少 LiquidGlass.Controls.cs，请与 Start-Switcher.ps1 放在同一目录。' }
+    $glassDll = Join-Path $PSScriptRoot 'LiquidGlass.Controls.dll'
+    $loaded = $false
+    if ((Test-Path -LiteralPath $glassDll) -and ((Get-Item -LiteralPath $glassDll).LastWriteTimeUtc -ge (Get-Item -LiteralPath $glassCs).LastWriteTimeUtc)) {
+        try { Add-Type -Path $glassDll -ErrorAction Stop; $loaded = $true } catch { }
+    }
+    if (-not $loaded) {
+        $refDrawing = [Drawing.Color].Assembly.Location
+        $refForms = [Windows.Forms.Panel].Assembly.Location
+        Add-Type -Path $glassCs -ReferencedAssemblies @($refDrawing, $refForms)
+    }
+}
+
 $authPath = Join-Path $env:USERPROFILE '.codex\auth.json'
 $storePath = Join-Path $env:LOCALAPPDATA 'ChatGPTAccountSwitcher\profiles'
+$defaultBackgroundPath = Join-Path $PSScriptRoot 'assets\background.png'
+$customBackgroundPath = Join-Path $env:LOCALAPPDATA 'ChatGPTAccountSwitcher\background.png'
+$script:backgroundPath = if (Test-Path -LiteralPath $customBackgroundPath) { $customBackgroundPath } else { $defaultBackgroundPath }
+if (-not [LgPaint]::LoadBackground($script:backgroundPath)) {
+    $script:backgroundPath = $defaultBackgroundPath
+    [LgPaint]::LoadBackground($script:backgroundPath) | Out-Null
+}
 $script:currentLabel = $null
 $script:selectedTarget = $null
 $script:accountCards = @()
-$script:trashActionButtons = @()
+$script:trashCards = @()
 $script:showTrash = $false
-$dark = [Drawing.Color]::FromArgb(32,33,35)
-$canvas = [Drawing.Color]::FromArgb(247,247,248)
-$ink = [Drawing.Color]::FromArgb(32,33,35)
-$muted = [Drawing.Color]::FromArgb(107,114,128)
-$accent = [Drawing.Color]::FromArgb(16,163,127)
-$paleGreen = [Drawing.Color]::FromArgb(232,247,242)
+$ink = [LgPaint]::Ink
+$muted = [LgPaint]::Muted
+$accent = [LgPaint]::Accent
+$glassWarnFill = [Drawing.Color]::FromArgb(120, 111, 71, 40)
+$glassWarnBorder = [Drawing.Color]::FromArgb(156, 255, 210, 158)
+$glassOkFill = [Drawing.Color]::FromArgb(108, 36, 92, 84)
+$glassOkBorder = [Drawing.Color]::FromArgb(150, 164, 231, 212)
+$glassNeutralFill = [LgPaint]::GlassTint
+$glassNeutralBorder = [LgPaint]::GlassEdge
+
+function New-LiquidGlassButton {
+    param(
+        [string]$Text,
+        [int]$X, [int]$Y, [int]$W, [int]$H,
+        [switch]$Primary,
+        [switch]$DangerStyle
+    )
+    $b = New-Object GlassButton
+    $b.Location = New-Object Drawing.Point($X, $Y)
+    $b.Size = New-Object Drawing.Size($W, $H)
+    $b.Text = $Text
+    $b.IsPrimary = [bool]$Primary
+    $b.IsDangerStyle = [bool]$DangerStyle
+    $b.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    if ($Primary) {
+        $b.Font = New-Object Drawing.Font('Microsoft YaHei UI', 9, [Drawing.FontStyle]::Bold)
+        $b.Padding = New-Object Windows.Forms.Padding(12, 0, 8, 0)
+    }
+    return $b
+}
+
+function Set-TransparentLabel($Label) {
+    $Label.BackColor = [Drawing.Color]::Transparent
+    $Label.ForeColor = $ink
+}
 
 $form = New-Object Windows.Forms.Form
 $form.Text = 'ChatGPT 本地账号切换'
-$form.ClientSize = New-Object Drawing.Size(840,560)
+$form.ClientSize = New-Object Drawing.Size(900, 600)
 $form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'FixedDialog'
+$form.FormBorderStyle = 'None'
 $form.MaximizeBox = $false
-$form.BackColor = $canvas
-$form.Font = New-Object Drawing.Font('Microsoft YaHei UI',10)
+$form.Opacity = 0
+$form.BackColor = [Drawing.Color]::FromArgb(255, 23, 30, 51)
+$form.Font = New-Object Drawing.Font('Microsoft YaHei UI', 10)
+
+$backdrop = New-Object GlassBackdropPanel
+$backdrop.Dock = 'Fill'
+$form.Controls.Add($backdrop)
+[LgPaint]::BackdropSource = $backdrop
+
+$root = New-Object Windows.Forms.Panel
+$root.Dock = 'Fill'
+$root.BackColor = [Drawing.Color]::Transparent
+$backdrop.Controls.Add($root)
+
+$titleBar = New-Object Windows.Forms.Panel
+$titleBar.Dock = 'Top'
+$titleBar.Height = 44
+$titleBar.BackColor = [Drawing.Color]::Transparent
+$root.Controls.Add($titleBar)
+
+$titleLabel = New-Object Windows.Forms.Label
+$titleLabel.Location = New-Object Drawing.Point(20, 12)
+$titleLabel.AutoSize = $true
+$titleLabel.Font = New-Object Drawing.Font('Microsoft YaHei UI', 10, [Drawing.FontStyle]::Bold)
+$titleLabel.ForeColor = $ink
+$titleLabel.BackColor = [Drawing.Color]::Transparent
+$titleLabel.Text = 'ChatGPT 账号切换器'
+$titleBar.Controls.Add($titleLabel)
+
+$closeBtn = New-LiquidGlassButton '✕' 0 8 36 30
+$closeBtn.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$closeBtn.Padding = New-Object Windows.Forms.Padding(0)
+$closeBtn.ForeColor = $muted
+$closeBtn.Add_Click({ $form.Close() })
+$titleBar.Controls.Add($closeBtn)
+$null = $titleBar.Add_Resize({ $closeBtn.Location = New-Object Drawing.Point(($titleBar.Width - 48), 7) })
+
+$script:dragOrigin = $null
+foreach ($dragCtl in @($titleBar, $titleLabel)) {
+    $dragCtl.Add_MouseDown({ param($s, $e) if ($e.Button -eq 'Left') { $script:dragOrigin = $s.PointToScreen($e.Location) - $form.Location } })
+    $dragCtl.Add_MouseMove({ param($s, $e) if ($e.Button -eq 'Left' -and $script:dragOrigin) { $p = $s.PointToScreen($e.Location); $form.Location = New-Object Drawing.Point(($p.X - $script:dragOrigin.X), ($p.Y - $script:dragOrigin.Y)) } })
+    $dragCtl.Add_MouseUp({ $script:dragOrigin = $null })
+}
+
+$body = New-Object Windows.Forms.Panel
+$body.Location = New-Object Drawing.Point(14, 50)
+$body.Size = New-Object Drawing.Size(872, 536)
+$body.BackColor = [Drawing.Color]::Transparent
+$root.Controls.Add($body)
 
 $sidebar = New-Object Windows.Forms.Panel
-$sidebar.Size = New-Object Drawing.Size(212,560)
-$sidebar.BackColor = $dark
-$form.Controls.Add($sidebar)
+$sidebar.Location = New-Object Drawing.Point(0, 0)
+$sidebar.Size = New-Object Drawing.Size(220, 536)
+$sidebar.BackColor = [Drawing.Color]::Transparent
+$body.Controls.Add($sidebar)
 
 $brand = New-Object Windows.Forms.Label
-$brand.Location = New-Object Drawing.Point(22,28)
-$brand.Size = New-Object Drawing.Size(174,42)
-$brand.Font = New-Object Drawing.Font('Microsoft YaHei UI',15,[Drawing.FontStyle]::Bold)
-$brand.ForeColor = [Drawing.Color]::White
-$brand.Text = '✦  ChatGPT'
+$brand.Location = New-Object Drawing.Point(20, 22)
+$brand.Size = New-Object Drawing.Size(180, 32)
+$brand.Font = New-Object Drawing.Font('Microsoft YaHei UI', 13, [Drawing.FontStyle]::Bold)
+$brand.ForeColor = $ink
+$brand.BackColor = [Drawing.Color]::Transparent
+$brand.Text = '控制台'
 $sidebar.Controls.Add($brand)
 
 $sideCaption = New-Object Windows.Forms.Label
-$sideCaption.Location = New-Object Drawing.Point(23,74)
-$sideCaption.Size = New-Object Drawing.Size(170,40)
-$sideCaption.ForeColor = [Drawing.Color]::Silver
-$sideCaption.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
+$sideCaption.Location = New-Object Drawing.Point(22, 54)
+$sideCaption.Size = New-Object Drawing.Size(176, 42)
+$sideCaption.ForeColor = $muted
+$sideCaption.BackColor = [Drawing.Color]::Transparent
+$sideCaption.Font = New-Object Drawing.Font('Microsoft YaHei UI', 8)
 $sideCaption.Text = "本地账号切换器`r`n仅限当前 Windows 用户"
 $sidebar.Controls.Add($sideCaption)
 
-$saveButton = New-Object Windows.Forms.Button
-$saveButton.Location = New-Object Drawing.Point(18,142)
-$saveButton.Size = New-Object Drawing.Size(176,43)
-$saveButton.FlatStyle = 'Flat'
-$saveButton.FlatAppearance.BorderColor = [Drawing.Color]::Gray
-$saveButton.BackColor = $dark
-$saveButton.ForeColor = [Drawing.Color]::White
-$saveButton.Text = '＋  保存当前登录'
+$saveButton = New-LiquidGlassButton '＋  保存当前登录' 8 108 204 46
 $sidebar.Controls.Add($saveButton)
 
-$refreshButton = New-Object Windows.Forms.Button
-$refreshButton.Location = New-Object Drawing.Point(18,195)
-$refreshButton.Size = New-Object Drawing.Size(176,39)
-$refreshButton.FlatStyle = 'Flat'
-$refreshButton.FlatAppearance.BorderSize = 0
-$refreshButton.BackColor = $dark
-$refreshButton.ForeColor = [Drawing.Color]::White
-$refreshButton.Text = '↻  刷新状态'
+$refreshButton = New-LiquidGlassButton '↻  刷新状态' 8 164 204 42
 $sidebar.Controls.Add($refreshButton)
 
-$addButton = New-Object Windows.Forms.Button
-$addButton.Location = New-Object Drawing.Point(18,249)
-$addButton.Size = New-Object Drawing.Size(176,43)
-$addButton.FlatStyle = 'Flat'
-$addButton.FlatAppearance.BorderColor = [Drawing.Color]::Gray
-$addButton.BackColor = $dark
-$addButton.ForeColor = [Drawing.Color]::White
-$addButton.Text = '＋  添加下一个账号'
+$addButton = New-LiquidGlassButton '＋  添加下一个账号' 8 216 204 46
 $sidebar.Controls.Add($addButton)
 
-$restoreButton = New-Object Windows.Forms.Button
-$restoreButton.Location = New-Object Drawing.Point(18,303)
-$restoreButton.Size = New-Object Drawing.Size(176,39)
-$restoreButton.FlatStyle = 'Flat'
-$restoreButton.FlatAppearance.BorderSize = 0
-$restoreButton.BackColor = $dark
-$restoreButton.ForeColor = [Drawing.Color]::White
-$restoreButton.Text = '↶  恢复先前账号'
+$restoreButton = New-LiquidGlassButton '↶  恢复先前账号' 8 270 204 42
 $sidebar.Controls.Add($restoreButton)
 
-$trashButton = New-Object Windows.Forms.Button
-$trashButton.Location = New-Object Drawing.Point(18,356)
-$trashButton.Size = New-Object Drawing.Size(176,39)
-$trashButton.FlatStyle = 'Flat'
-$trashButton.FlatAppearance.BorderSize = 0
-$trashButton.BackColor = $dark
-$trashButton.ForeColor = [Drawing.Color]::White
-$trashButton.Text = '▤  查看垃圾箱'
+$trashButton = New-LiquidGlassButton '▤  查看垃圾箱' 8 320 204 42
 $sidebar.Controls.Add($trashButton)
 
+$backgroundButton = New-LiquidGlassButton '▧  切换背景' 8 374 204 42
+$sidebar.Controls.Add($backgroundButton)
+
 $sideNote = New-Object Windows.Forms.Label
-$sideNote.Location = New-Object Drawing.Point(22,432)
-$sideNote.Size = New-Object Drawing.Size(171,90)
-$sideNote.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
-$sideNote.ForeColor = [Drawing.Color]::Silver
+$sideNote.Location = New-Object Drawing.Point(20, 430)
+$sideNote.Size = New-Object Drawing.Size(180, 88)
+$sideNote.Font = New-Object Drawing.Font('Microsoft YaHei UI', 8)
+$sideNote.ForeColor = $muted
+$sideNote.BackColor = [Drawing.Color]::Transparent
 $sideNote.Text = "切换前请完全退出`r`nChatGPT / Codex。`r`n本地会话不会被复制或删除。"
 $sidebar.Controls.Add($sideNote)
 
+$main = New-Object Windows.Forms.Panel
+$main.Location = New-Object Drawing.Point(228, 0)
+$main.Size = New-Object Drawing.Size(644, 536)
+$main.BackColor = [Drawing.Color]::Transparent
+$body.Controls.Add($main)
+
 $heading = New-Object Windows.Forms.Label
-$heading.Location = New-Object Drawing.Point(244,28)
-$heading.Size = New-Object Drawing.Size(550,40)
-$heading.Font = New-Object Drawing.Font('Microsoft YaHei UI',18,[Drawing.FontStyle]::Bold)
+$heading.Location = New-Object Drawing.Point(24, 22)
+$heading.Size = New-Object Drawing.Size(560, 36)
+$heading.Font = New-Object Drawing.Font('Microsoft YaHei UI', 17, [Drawing.FontStyle]::Bold)
 $heading.ForeColor = $ink
+$heading.BackColor = [Drawing.Color]::Transparent
 $heading.Text = '选择要使用的账号'
-$form.Controls.Add($heading)
+$main.Controls.Add($heading)
 
 $subtitle = New-Object Windows.Forms.Label
-$subtitle.Location = New-Object Drawing.Point(246,72)
-$subtitle.Size = New-Object Drawing.Size(550,27)
+$subtitle.Location = New-Object Drawing.Point(26, 58)
+$subtitle.Size = New-Object Drawing.Size(560, 24)
 $subtitle.ForeColor = $muted
+$subtitle.BackColor = [Drawing.Color]::Transparent
 $subtitle.Text = '邮箱用于辨认；真正的切换校验仍使用账号 ID。'
-$form.Controls.Add($subtitle)
+$main.Controls.Add($subtitle)
+
+$bannerPlate = New-Object GlassPlatePanel
+$bannerPlate.Location = New-Object Drawing.Point(22, 92)
+$bannerPlate.Size = New-Object Drawing.Size(592, 48)
+$bannerPlate.CornerRadius = 14
+$bannerPlate.GlassFill = $glassNeutralFill
+$bannerPlate.GlassBorder = $glassNeutralBorder
+$main.Controls.Add($bannerPlate)
 
 $banner = New-Object Windows.Forms.Label
-$banner.Location = New-Object Drawing.Point(246,112)
-$banner.Size = New-Object Drawing.Size(548,49)
-$banner.BackColor = [Drawing.Color]::White
+$banner.Dock = 'Fill'
 $banner.ForeColor = $ink
-$banner.Padding = New-Object Windows.Forms.Padding(13,13,8,8)
-$form.Controls.Add($banner)
+$banner.BackColor = [Drawing.Color]::Transparent
+$banner.Padding = New-Object Windows.Forms.Padding(14, 13, 10, 8)
+$banner.Font = New-Object Drawing.Font('Microsoft YaHei UI', 9)
+$bannerPlate.Controls.Add($banner)
 
 $listTitle = New-Object Windows.Forms.Label
-$listTitle.Location = New-Object Drawing.Point(246,181)
-$listTitle.Size = New-Object Drawing.Size(540,26)
-$listTitle.Font = New-Object Drawing.Font('Microsoft YaHei UI',11,[Drawing.FontStyle]::Bold)
+$listTitle.Location = New-Object Drawing.Point(26, 152)
+$listTitle.Size = New-Object Drawing.Size(540, 24)
+$listTitle.Font = New-Object Drawing.Font('Microsoft YaHei UI', 11, [Drawing.FontStyle]::Bold)
 $listTitle.ForeColor = $ink
+$listTitle.BackColor = [Drawing.Color]::Transparent
 $listTitle.Text = '已保存的账号'
-$form.Controls.Add($listTitle)
+$main.Controls.Add($listTitle)
 
 $list = New-Object Windows.Forms.FlowLayoutPanel
-$list.Location = New-Object Drawing.Point(246,213)
-$list.Size = New-Object Drawing.Size(550,210)
+$list.Location = New-Object Drawing.Point(24, 182)
+$list.Size = New-Object Drawing.Size(600, 258)
 $list.FlowDirection = 'TopDown'
 $list.WrapContents = $false
 $list.AutoScroll = $true
-$list.BackColor = $canvas
-$form.Controls.Add($list)
+$list.BackColor = [Drawing.Color]::Transparent
+$main.Controls.Add($list)
 
-$switchButton = New-Object Windows.Forms.Button
-$switchButton.Location = New-Object Drawing.Point(246,442)
-$switchButton.Size = New-Object Drawing.Size(187,43)
-$switchButton.FlatStyle = 'Flat'
-$switchButton.FlatAppearance.BorderSize = 0
-$switchButton.BackColor = $accent
-$switchButton.ForeColor = [Drawing.Color]::White
-$switchButton.Font = New-Object Drawing.Font('Microsoft YaHei UI',10,[Drawing.FontStyle]::Bold)
-$switchButton.Text = '切换到所选账号'
+$switchButton = New-LiquidGlassButton '切换到所选账号' 24 458 590 48 -Primary
+$switchButton.Font = New-Object Drawing.Font('Microsoft YaHei UI', 10, [Drawing.FontStyle]::Bold)
+$switchButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 $switchButton.Enabled = $false
-$form.Controls.Add($switchButton)
+$main.Controls.Add($switchButton)
 
 $status = New-Object Windows.Forms.Label
-$status.Location = New-Object Drawing.Point(246,496)
-$status.Size = New-Object Drawing.Size(550,48)
+$status.Location = New-Object Drawing.Point(24, 512)
+$status.Size = New-Object Drawing.Size(588, 20)
 $status.ForeColor = $muted
-$status.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
-$form.Controls.Add($status)
+$status.BackColor = [Drawing.Color]::Transparent
+$status.Font = New-Object Drawing.Font('Microsoft YaHei UI', 8)
+$main.Controls.Add($status)
+
+$form.Add_Load({
+    [GlassDwm]::TryAcrylic($form.Handle) | Out-Null
+    [LgPaint]::BackdropSource = $backdrop
+    [GlassFormHelper]::EnableDoubleBuffer($form)
+    [GlassFormHelper]::EnableDoubleBuffer($root)
+    [GlassFormHelper]::EnableDoubleBuffer($body)
+    [GlassFormHelper]::EnableDoubleBuffer($list)
+    [LgPaint]::RefreshBackdropCache($backdrop)
+    $path = [LgPaint]::RoundRect((New-Object Drawing.Rectangle 0, 0, $form.Width, $form.Height), 18)
+    $form.Region = New-Object Drawing.Region($path)
+    $path.Dispose()
+})
+
+$fadeTimer = New-Object Windows.Forms.Timer
+$fadeTimer.Interval = 30
+$fadeTimer.Add_Tick({
+    $form.Opacity = [Math]::Min(1.0, $form.Opacity + 0.2)
+    if ($form.Opacity -ge 1.0) { $fadeTimer.Stop() }
+})
+$form.Add_Shown({
+    $form.Refresh()
+    $fadeTimer.Start()
+})
+
+$form.Add_ResizeEnd({
+    [LgPaint]::RefreshBackdropCache($backdrop)
+    $body.Invalidate($true)
+})
 
 function Get-CurrentId {
     if (-not (Test-Path -LiteralPath $authPath)) { return $null }
@@ -179,87 +290,72 @@ function Update-Preflight {
     $addButton.Enabled = [bool]($running -eq 0 -and $script:currentLabel -and -not $pending -and -not $pendingError)
     $restoreButton.Enabled = [bool]($running -eq 0 -and $pending)
     $switchButton.Enabled = [bool]($running -eq 0 -and -not $pending -and -not $pendingError -and -not $script:showTrash -and $script:currentLabel -and $script:selectedTarget -and ($script:currentLabel -ne $script:selectedTarget))
-    foreach ($button in $script:trashActionButtons) {
-        $button.Enabled = [bool]($running -eq 0 -and -not $pending -and -not $pendingError -and
-            ($script:showTrash -or ($script:currentLabel -and $button.Tag -ne $script:currentLabel)))
+    foreach ($card in $script:accountCards) {
+        $moveEnabled = [bool](-not $card.CardCurrent -and $running -eq 0 -and -not $pending -and -not $pendingError -and $script:currentLabel)
+        if ($card.MoveEnabled -ne $moveEnabled) {
+            $card.MoveEnabled = $moveEnabled
+            $card.Invalidate()
+        }
+    }
+    foreach ($card in $script:trashCards) {
+        $actionsEnabled = [bool]($running -eq 0 -and -not $pending -and -not $pendingError)
+        if ($card.ActionsEnabled -ne $actionsEnabled) {
+            $card.ActionsEnabled = $actionsEnabled
+            $card.Invalidate()
+        }
     }
     if ($pending) { $addButton.Text = '✓  完成添加并保存' } else { $addButton.Text = '＋  添加下一个账号' }
     if ($pending -and $running -eq 0) { $addButton.Enabled = $true }
+    $oldFill = $bannerPlate.GlassFill.ToArgb()
+    $oldBorder = $bannerPlate.GlassBorder.ToArgb()
     if ($running -gt 0) {
         $banner.Text = "●  ChatGPT/Codex 仍在运行（$running 个进程），退出后才能切换"
-        $banner.BackColor = [Drawing.Color]::FromArgb(255,243,230)
+        $bannerPlate.GlassFill = $glassWarnFill
+        $bannerPlate.GlassBorder = $glassWarnBorder
     } elseif ($pending) {
         $banner.Text = '待添加账号：登录新账号后关闭应用，再点击「完成添加并保存」。'
-        $banner.BackColor = [Drawing.Color]::FromArgb(255,243,230)
+        $bannerPlate.GlassFill = $glassWarnFill
+        $bannerPlate.GlassBorder = $glassWarnBorder
     } elseif (-not $script:currentLabel) {
         $banner.Text = '请先保存当前登录，再选择目标账号。'
-        $banner.BackColor = [Drawing.Color]::White
+        $bannerPlate.GlassFill = $glassNeutralFill
+        $bannerPlate.GlassBorder = $glassNeutralBorder
     } else {
         $banner.Text = "●  当前：$($script:currentLabel)    ·    可以选择目标账号"
-        $banner.BackColor = $paleGreen
+        $bannerPlate.GlassFill = $glassOkFill
+        $bannerPlate.GlassBorder = $glassOkBorder
     }
+    if ($oldFill -ne $bannerPlate.GlassFill.ToArgb() -or $oldBorder -ne $bannerPlate.GlassBorder.ToArgb()) { $bannerPlate.Invalidate() }
 }
 
 function Select-Target([string]$Label) {
     $script:selectedTarget = $Label
     foreach ($card in $script:accountCards) {
-        $card.BackColor = if ($card.Tag -eq $Label) { $paleGreen } else { [Drawing.Color]::White }
+        $selected = ($card.Tag -eq $Label)
+        if ($card.CardSelected -ne $selected) {
+            $card.CardSelected = $selected
+            $card.Invalidate()
+        }
     }
     Update-Preflight
 }
 
 function New-AccountCard([string]$Label,[string]$Email,[bool]$IsCurrent) {
-    $card = New-Object Windows.Forms.Panel
-    $card.Size = New-Object Drawing.Size(526,67)
-    $card.Margin = New-Object Windows.Forms.Padding(0,0,0,9)
-    $card.BackColor = [Drawing.Color]::White
-    $card.BorderStyle = 'FixedSingle'
+    $card = New-Object GlassAccountCard
     $card.Tag = $Label
+    $card.CardCurrent = $IsCurrent
+    $card.Title = if ($Email) { "$Email · $Label" } else { $Label }
+    $card.Hint = if ($IsCurrent) { '当前登录' } elseif ($Email) { '点击选择为目标账号' } else { '邮箱不可用 · 点击选择' }
+    $card.AvatarLetter = if ($Email) { $Email.Substring(0, 1) } else { $Label.Substring(0, 1) }
+    $card.MoveEnabled = -not $IsCurrent
 
-    $icon = New-Object Windows.Forms.Label
-    $icon.Location = New-Object Drawing.Point(13,14)
-    $icon.Size = New-Object Drawing.Size(38,38)
-    $icon.BackColor = $accent
-    $icon.ForeColor = [Drawing.Color]::White
-    $icon.TextAlign = 'MiddleCenter'
-    $icon.Font = New-Object Drawing.Font('Microsoft YaHei UI',13,[Drawing.FontStyle]::Bold)
-    $icon.Text = if ($Email) { $Email.Substring(0,1).ToUpperInvariant() } else { $Label.Substring(0,1).ToUpperInvariant() }
-    $icon.Tag = $Label
-    $card.Controls.Add($icon)
-
-    $name = New-Object Windows.Forms.Label
-    $name.Location = New-Object Drawing.Point(64,12)
-    $name.Size = New-Object Drawing.Size(345,25)
-    $name.Font = New-Object Drawing.Font('Microsoft YaHei UI',10,[Drawing.FontStyle]::Bold)
-    $name.ForeColor = $ink
-    $name.AutoEllipsis = $true
-    $name.Text = if ($Email) { "$Email · $Label" } else { $Label }
-    $name.Tag = $Label
-    $card.Controls.Add($name)
-
-    $hint = New-Object Windows.Forms.Label
-    $hint.Location = New-Object Drawing.Point(65,38)
-    $hint.Size = New-Object Drawing.Size(340,20)
-    $hint.ForeColor = $muted
-    $hint.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
-    $hint.Text = if ($IsCurrent) { '当前登录' } elseif ($Email) { '点击选择为目标账号' } else { '邮箱不可用 · 点击选择' }
-    $hint.Tag = $Label
-    $card.Controls.Add($hint)
-
-    $moveButton = New-Object Windows.Forms.Button
-    $moveButton.Location = New-Object Drawing.Point(412,18)
-    $moveButton.Size = New-Object Drawing.Size(103,31)
-    $moveButton.FlatStyle = 'Flat'
-    $moveButton.ForeColor = $muted
-    $moveButton.Text = '移到垃圾箱'
-    $moveButton.Tag = $Label
-    $moveButton.Enabled = -not $IsCurrent
-    $moveButton.Add_Click({
+    $card.Add_Click({ Select-Target ([string]$this.Tag) })
+    $card.Add_MoveToTrash({
         try {
             Update-Preflight
-            if (-not $this.Enabled) { throw '当前账号或恢复流程中的账号不能移除。' }
             $label = [string]$this.Tag
-            $choice = [Windows.Forms.MessageBox]::Show("将 $label 移到加密垃圾箱？`r`n请先完全退出 ChatGPT/Codex；此操作不会删除聊天记录。",'确认移除账号',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Warning)
+            if ($this.CardCurrent -or -not $this.MoveEnabled) { throw '当前账号不能移除。' }
+            $choice = [Windows.Forms.MessageBox]::Show("将 $label 移到加密垃圾箱？`r`n请先完全退出 ChatGPT/Codex；此操作不会删除聊天记录。", '确认移除账号', [Windows.Forms.MessageBoxButtons]::YesNo, [Windows.Forms.MessageBoxIcon]::Warning)
             if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
             Move-ProfileToTrash -Label $label -AuthPath $authPath -StorePath $storePath | Out-Null
             if ($script:selectedTarget -eq $label) { $script:selectedTarget = $null }
@@ -267,88 +363,47 @@ function New-AccountCard([string]$Label,[string]$Email,[bool]$IsCurrent) {
             $status.Text = "账号 $label 已移到垃圾箱，可随时恢复。"
         } catch { $status.Text = '移除失败：' + $_.Exception.Message }
     })
-    $card.Controls.Add($moveButton)
-    $script:trashActionButtons += $moveButton
-
-    $handler = { Select-Target ([string]$this.Tag) }
-    $card.Add_Click($handler)
-    $icon.Add_Click($handler)
-    $name.Add_Click($handler)
-    $hint.Add_Click($handler)
     return $card
 }
 
 function New-TrashCard($Entry) {
-    $card = New-Object Windows.Forms.Panel
-    $card.Size = New-Object Drawing.Size(526,67)
-    $card.Margin = New-Object Windows.Forms.Padding(0,0,0,9)
-    $card.BackColor = [Drawing.Color]::White
-    $card.BorderStyle = 'FixedSingle'
+    $card = New-Object GlassTrashCard
+    $card.Tag = [string]$Entry.Id
+    $card.Title = [string]$Entry.Label
+    $card.DateText = '移入时间：' + $Entry.DeletedAt.ToString('yyyy-MM-dd HH:mm')
 
-    $name = New-Object Windows.Forms.Label
-    $name.Location = New-Object Drawing.Point(15,11)
-    $name.Size = New-Object Drawing.Size(305,25)
-    $name.Font = New-Object Drawing.Font('Microsoft YaHei UI',10,[Drawing.FontStyle]::Bold)
-    $name.ForeColor = $ink
-    $name.AutoEllipsis = $true
-    $name.Text = [string]$Entry.Label
-    $card.Controls.Add($name)
-
-    $date = New-Object Windows.Forms.Label
-    $date.Location = New-Object Drawing.Point(15,39)
-    $date.Size = New-Object Drawing.Size(300,18)
-    $date.ForeColor = $muted
-    $date.Font = New-Object Drawing.Font('Microsoft YaHei UI',8)
-    $date.Text = '移入时间：' + $Entry.DeletedAt.ToString('yyyy-MM-dd HH:mm')
-    $card.Controls.Add($date)
-
-    $restore = New-Object Windows.Forms.Button
-    $restore.Location = New-Object Drawing.Point(333,18)
-    $restore.Size = New-Object Drawing.Size(78,31)
-    $restore.FlatStyle = 'Flat'
-    $restore.ForeColor = $accent
-    $restore.Text = '恢复'
-    $restore.Tag = [string]$Entry.Id
-    $restore.Add_Click({
+    $card.Add_RestoreClicked({
         try {
             Update-Preflight
-            if (-not $this.Enabled) { throw '请先退出应用并完成正在添加的账号。' }
+            if (-not $this.ActionsEnabled) { throw '请先退出应用并完成正在添加的账号。' }
             Restore-TrashedProfile -Id ([string]$this.Tag) -StorePath $storePath
             Refresh-Accounts
             $status.Text = '账号已恢复到已保存列表。'
         } catch { $status.Text = '恢复失败：' + $_.Exception.Message }
     })
-    $card.Controls.Add($restore)
-    $script:trashActionButtons += $restore
-
-    $remove = New-Object Windows.Forms.Button
-    $remove.Location = New-Object Drawing.Point(418,18)
-    $remove.Size = New-Object Drawing.Size(97,31)
-    $remove.FlatStyle = 'Flat'
-    $remove.ForeColor = [Drawing.Color]::FromArgb(180,60,60)
-    $remove.Text = '永久删除'
-    $remove.Tag = [string]$Entry.Id
-    $remove.Add_Click({
+    $card.Add_RemoveClicked({
         try {
             Update-Preflight
-            if (-not $this.Enabled) { throw '请先退出应用并完成正在添加的账号。' }
+            if (-not $this.ActionsEnabled) { throw '请先退出应用并完成正在添加的账号。' }
             $id = [string]$this.Tag
-            $choice = [Windows.Forms.MessageBox]::Show("永久删除垃圾箱中的账号记录？`r`n此操作不能撤销，之后如需切换到该账号须重新登录并保存。",'确认永久删除',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Warning)
+            $choice = [Windows.Forms.MessageBox]::Show("永久删除垃圾箱中的账号记录？`r`n此操作不能撤销，之后如需切换到该账号须重新登录并保存。", '确认永久删除', [Windows.Forms.MessageBoxButtons]::YesNo, [Windows.Forms.MessageBoxIcon]::Warning)
             if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
             Remove-TrashedProfile -Id $id -AuthPath $authPath -StorePath $storePath
             Refresh-Accounts
             $status.Text = '已永久删除该账号的加密保存记录。'
         } catch { $status.Text = '删除失败：' + $_.Exception.Message }
     })
-    $card.Controls.Add($remove)
-    $script:trashActionButtons += $remove
+    $script:trashCards += $card
     return $card
 }
 
 function Refresh-Accounts {
+    [GlassFormHelper]::BeginUpdate($list)
+    $list.SuspendLayout()
+    try {
     $list.Controls.Clear()
     $script:accountCards = @()
-    $script:trashActionButtons = @()
+    $script:trashCards = @()
     $script:currentLabel = $null
     $currentId = Get-CurrentId
     $labels = @(Get-ProfileLabels -StorePath $storePath)
@@ -389,6 +444,9 @@ function Refresh-Accounts {
         if ($script:selectedTarget) { Select-Target $script:selectedTarget }
     }
     Update-Preflight
+    } finally {
+        [GlassFormHelper]::EndUpdate($list)
+    }
 }
 
 $trashButton.Add_Click({
@@ -406,7 +464,33 @@ $saveButton.Add_Click({
     } catch { $status.Text = '保存失败：' + $_.Exception.Message }
 })
 
-$refreshButton.Add_Click({ Refresh-Accounts })
+$refreshButton.Add_Click({
+    $backgroundLoaded = [LgPaint]::LoadBackground($script:backgroundPath)
+    [LgPaint]::RefreshBackdropCache($backdrop)
+    $backdrop.Invalidate($true)
+    Refresh-Accounts
+    if (-not $backgroundLoaded) { $status.Text = '背景图片无法读取；请重新导入或检查图片文件。' }
+})
+
+$backgroundButton.Add_Click({
+    $picker = New-Object Windows.Forms.OpenFileDialog
+    try {
+        $picker.Title = '选择背景图片'
+        $picker.Filter = '图片文件 (*.png;*.jpg;*.jpeg;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.gif'
+        $picker.CheckFileExists = $true
+        $picker.Multiselect = $false
+        $pictures = [Environment]::GetFolderPath('MyPictures')
+        if (Test-Path -LiteralPath $pictures) { $picker.InitialDirectory = $pictures }
+        if ($picker.ShowDialog($form) -ne [Windows.Forms.DialogResult]::OK) { return }
+        [LgPaint]::ImportBackground($picker.FileName, $customBackgroundPath)
+        if (-not [LgPaint]::LoadBackground($customBackgroundPath)) { throw '导入后无法读取图片。' }
+        $script:backgroundPath = $customBackgroundPath
+        [LgPaint]::RefreshBackdropCache($backdrop)
+        $backdrop.Invalidate($true)
+        $status.Text = '背景已更换；图片仅保存在当前 Windows 用户的本地目录。'
+    } catch { $status.Text = '背景导入失败：' + $_.Exception.Message }
+    finally { $picker.Dispose() }
+})
 
 $addButton.Add_Click({
     try {
@@ -458,10 +542,13 @@ $timer.Add_Tick({ Update-Preflight })
 Refresh-Accounts
 if ($ValidateUi) {
     "UI_READY cards=$($script:accountCards.Count)"
+    $fadeTimer.Dispose()
     $form.Dispose()
     return
 }
 $timer.Start()
 [void]$form.ShowDialog()
 $timer.Stop()
+$fadeTimer.Stop()
+$fadeTimer.Dispose()
 $form.Dispose()

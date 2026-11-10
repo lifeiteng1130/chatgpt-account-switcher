@@ -1,6 +1,10 @@
 # ChatGPT Windows 本地账号切换器
 
-双击 `打开账号切换器.cmd` 启动图形界面。界面采用深色侧栏、浅色主区和账号卡片。仅适用于当前 Windows 用户，使用官方桌面应用的 `%USERPROFILE%\.codex\auth.json` 登录文件。
+双击 `ChatGPTAccountSwitcher.exe` 启动图形界面，不显示命令行窗口，也可以通过桌面上的“ChatGPT 账号切换器”快捷方式打开。要固定到任务栏，右键单击该 `.exe`，选择“显示更多选项”→“固定到任务栏”（不同 Windows 版本菜单可能略有不同）。启动失败时会显示错误提示。界面使用背景图片和磨砂玻璃风格的卡片、按钮。仅适用于当前 Windows 用户，使用官方桌面应用的 `%USERPROFILE%\.codex\auth.json` 登录文件。
+
+## 更换背景
+
+点击左侧“切换背景”选择 PNG、JPG、BMP 或 GIF 图片。工具会按比例缩小到最多 1800×1200，再转换为 PNG，保存在 `%LOCALAPPDATA%\ChatGPTAccountSwitcher\background.png`，立即应用并在下次启动时继续使用；选择的原图不会修改，导入的私人图片不会写入项目目录或上传。要恢复默认图，可再次点击“切换背景”并选择项目中的 `assets\background.png`。建议使用横向图片；工具会按窗口比例居中裁剪。手动替换已保存的图片后，点击“刷新状态”即可重新加载。
 
 ## 首次使用
 
@@ -39,7 +43,10 @@
 使用 Windows PowerShell 5.1 执行：
 
 ```powershell
+./Build-Launcher.ps1
 Invoke-Pester -Script '.\tests\*.Tests.ps1'
 ```
+
+构建脚本使用 Windows 自带的 .NET Framework C# 编译器和 Windows PowerShell 程序集，不需要安装额外依赖。`ChatGPTAccountSwitcher.exe`、`Start-Switcher.ps1`、`AccountSwitcher.psm1` 和预编译的 `LiquidGlass.Controls.dll` 应保留在同一目录；DLL 缺失或比源码旧时会临时编译控件，启动会慢一些。
 
 测试使用假登录数据，不能证明官方应用中的真实双账号切换已成功。
